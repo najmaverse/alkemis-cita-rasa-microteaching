@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Alkemis Cita Rasa</title>
+<link href="https://fonts.googleapis.com/css2?family=MedievalSharp&family=Cinzel:wght@700;900&display=swap" rel="stylesheet">
+<style>
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;color:#f8e7b9;font-family:"MedievalSharp",Georgia,serif;background:radial-gradient(ellipse at top,#4d321c,#170d06 75%) fixed;display:flex;flex-direction:column;align-items:center}
+h1{margin:8px 0 6px;font-size:1.5rem;font-weight:400;letter-spacing:1px}
+.wrap{position:relative;width:min(98vw,calc((100vh - 120px)*16/9));border:12px solid #4a2f0a;outline:3px solid #c9962b;background:#000;box-shadow:0 0 25px #000a}
+canvas{width:100%;display:block;touch-action:none}
+.bar{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:10px 0 4px}
+button{font:inherit;border:3px double #5a3a1a;border-radius:8px;background:linear-gradient(#f3ead0,#d9c897);color:#3b2412;box-shadow:0 3px 8px #000a;padding:8px 14px;cursor:pointer;font-size:1rem}
+button.on{background:linear-gradient(#cfe6fa,#8fb8d9)}
+button:hover{filter:brightness(1.2)}
+#st{font-size:.85rem;color:#e3c88a;margin-bottom:8px;text-align:center;padding:0 8px}
+#sum{display:none;position:absolute;inset:6% 12%;background:linear-gradient(135deg,#f1e0b8,#e6cf9b);color:#3b2412;border:5px double #5a3a1a;padding:18px 26px;font-family:Georgia,serif;font-size:1.15rem;line-height:1.5;overflow:auto}
+#sum h2{margin:0 0 6px;font-family:"MedievalSharp",Georgia,serif;font-weight:400}
+</style>
+</head>
+<body>
+<h1>ALKEMIS CITA RASA</h1>
+<div class="wrap">
+<canvas id="cv" width="1280" height="720"></canvas>
+<div id="sum"><h2>Rangkuman Konsep</h2>
+<p><b>1. Indra pengecap</b> mendeteksi lima rasa dasar (manis, asin, asam, pahit, umami) melalui reseptor pada kuncup pengecap (taste bud).</p>
+<p><b>2. Indra pembau</b> mendeteksi molekul aroma yang masuk ke rongga hidung dan diterima reseptor olfaktori. Aroma memberi informasi tambahan tentang karakteristik makanan.</p>
+<p><b>3. Keterkaitan:</b> otak mengintegrasikan informasi rasa dan aroma menjadi persepsi cita rasa. Saat hidung tertutup, informasi aroma terbatas sehingga cita rasa dapat berubah, sedangkan deteksi lima rasa dasar tetap ada.</p>
+<p style="font-size:.9rem">Keduanya adalah indra kimiawi (kemoreseptor).</p></div>
+</div>
+<div class="bar">
+<button id="cam">Mulai kamera</button>
+<button id="rs" class="alt">Makanan lain</button>
+<button id="nz" class="alt">Jepit hidung (N)</button>
+<button id="sm" class="alt">Rangkuman</button>
+</div>
+<div id="st">Tanpa kamera: seret makanan dengan mouse, tekan N untuk jepit/lepas hidung.</div>
+
+<script type="module">
+const $=id=>document.getElementById(id);
+const cv=$("cv"),ctx=cv.getContext("2d"),W=1280,H=720;
+const vid=document.createElement("video");vid.playsInline=true;vid.muted=true;
+const FOODS = [
+  {e:"🍓", n:"Stroberi", t:["manis","asam"], a:"wangi stroberi"},
+  {e:"🍋", n:"Lemon", t:["asam"], a:"wangi lemon"},
+  {e:"🍫", n:"Cokelat", t:["manis"], a:"wangi cokelat"},
+  {e:"☕", n:"Kopi", t:["pahit"], a:"wangi kopi"}];
+function shuf(){for(let i=3;i>0;i--){const j=Math.floor(Math.random()*(i+1));[FOODS[i],FOODS[j]]=[FOODS[j],FOODS[i]]}}shuf();
+const ALL=["manis","asin","asam","pahit","umami"];
+const FX=[0,1,2,3].map(i=>W/2+(i-1.5)*230),FY=H-120;
+let ac;function beep(f=440,d=.12){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();const o=ac.createOscillator(),g=ac.createGain();o.type="triangle";o.frequency.value=f;g.gain.value=.07;o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+d)}catch(e){}}
+
+let hasCam=false,faceLM=null,handLM=null,lastVT=-1,face=null,jaw=0,handPts=[],pinchPrev=[];
+const mouse={x:0,y:0,down:false,active:false,src:"mouse"};
+let phase="pick",held=null,cur=0;
+let manual=false,onF=0,offF=0,nosePinch=false,closed=false,prevClosed=false;
+let tOpen=0,tClosed=0,taste=0,aroma=0,hintT="",hintU=0,last=performance.now();
+const hint=s=>{hintT=s;hintU=performance.now()+2200};
+
+// ---------- kamera & MediaPipe ----------
+$("cam").onclick=async()=>{
+$("st").textContent="Memuat kamera dan model… (butuh internet)";
+try{
+const stream=await navigator.mediaDevices.getUserMedia({video:{width:{ideal:1280},height:{ideal:720}}});
+vid.srcObject=stream;await vid.play();hasCam=true;
+const V=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs");
+const fs=await V.FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm");
+faceLM=await V.FaceLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"},runningMode:"VIDEO",numFaces:1,outputFaceBlendshapes:true});
+let s="Wajah siap";
+try{handLM=await V.HandLandmarker.createFromOptions(fs,{baseOptions:{modelAssetPath:"https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"},runningMode:"VIDEO",numHands:2});s+=" · Tangan siap"}catch(e){s+=" · Tangan gagal: pakai mouse + tombol N"}
+$("st").textContent=s;
+}catch(e){$("st").textContent=hasCam?"Model gagal dimuat (cek internet). Pakai mouse + tombol N.":"Kamera tidak bisa diakses. Pakai mouse + tombol N."}};
+
+function VS(){const vw=vid.videoWidth||W,vh=vid.videoHeight||H,sc=Math.max(W/vw,H/vh);return{vw,vh,sc,ox:(W-vw*sc)/2,oy:(H-vh*sc)/2}}
+function mp(x,y){const v=VS();return{x:(1-x)*v.vw*v.sc+v.ox,y:y*v.vh*v.sc+v.oy}}
+function detect(now){
+if(!hasCam||vid.readyState<2||vid.currentTime===lastVT)return;lastVT=vid.currentTime;
+if(faceLM){try{const r=faceLM.detectForVideo(vid,now);face=(r.faceLandmarks&&r.faceLandmarks[0])||null;
+const bs=r.faceBlendshapes&&r.faceBlendshapes[0];const c=bs&&bs.categories.find(x=>x.categoryName==="jawOpen");jaw=c?c.score:0}catch(e){}}
+if(handLM){try{const r=handLM.detectForVideo(vid,now);const L=r.landmarks||[];
+handPts=L.map((h,i)=>{const a=h[4],b=h[8];const sz=Math.hypot(h[0].x-h[9].x,h[0].y-h[9].y)||.1;const d=Math.hypot(a.x-b.x,a.y-b.y)/sz;
+const dn=pinchPrev[i]?d<.5:d<.33;pinchPrev[i]=dn;const q=mp((a.x+b.x)/2,(a.y+b.y)/2);return{x:q.x,y:q.y,down:dn,src:"hand"}});pinchPrev.length=L.length}catch(e){}}}
+cv.addEventListener("pointermove",e=>{const r=cv.getBoundingClientRect();mouse.x=(e.clientX-r.left)/r.width*W;mouse.y=(e.clientY-r.top)/r.height*H;mouse.active=true});
+cv.addEventListener("pointerdown",e=>{mouse.down=true;mouse.active=true;const r=cv.getBoundingClientRect();mouse.x=(e.clientX-r.left)/r.width*W;mouse.y=(e.clientY-r.top)/r.height*H});
+window.addEventListener("pointerup",()=>{mouse.down=false});
+cv.addEventListener("pointerleave",()=>{mouse.active=false;mouse.down=false});
+
+function geo(){
+if(face){const v=VS();const m=(a,b)=>mp((face[a].x+face[b].x)/2,(face[a].y+face[b].y)/2);
+const fh=Math.abs(face[152].y-face[10].y)*v.vh*v.sc,fw=Math.abs(face[454].x-face[234].x)*v.vw*v.sc;
+const nz=mp(face[1].x,face[1].y),cq=mp(face[6].x,face[6].y),br=mp(face[10].x,face[10].y);
+return{mouth:m(13,14),nose:nz,cav:{x:cq.x,y:cq.y+fh*.03},brain:{x:br.x,y:Math.max(190,br.y-fh*.35)},s:fh/320,fw,tr:true}}
+return{mouth:{x:W/2,y:H*.58},nose:{x:W/2,y:H*.45},cav:{x:W/2,y:H*.38},brain:{x:W/2,y:H*.27},s:1.1,fw:280,tr:false}}
+
+// ---------- logika ----------
+function logic(dt,G){
+const pts=handPts.concat(mouse.active?[mouse]:[]),down=pts.filter(p=>p.down);
+let hp=null;
+if(held){let best=1e9;down.forEach(p=>{const d=Math.hypot(p.x-held.x,p.y-held.y);if(d<best){best=d;hp=p}});
+if(best>200)hp=null;if(hp){held.x=hp.x;held.y=hp.y}else{held=null;if(phase==="hold")phase="pick"}}
+let np=false;down.forEach(p=>{if(p!==hp&&p.src==="hand"&&Math.hypot(p.x-G.nose.x,p.y-G.nose.y)<G.fw*.3)np=true});
+if(np){onF++;offF=0}else{offF++;onF=0}
+if(onF>=3)nosePinch=true;if(offF>=3)nosePinch=false;
+closed=manual||nosePinch;
+if(phase==="mouth"&&closed!==prevClosed)beep(closed?260:520);
+prevClosed=closed;
+if(!held&&phase==="pick"){
+for(const p of down){if(p.src==="hand"&&Math.hypot(p.x-G.nose.x,p.y-G.nose.y)<G.fw*.3)continue;
+for(let i=0;i<4;i++)if(Math.hypot(p.x-FX[i],p.y-FY)<105){held={j:i,x:p.x,y:p.y};phase="hold";beep(600);break}
+if(held)break}}
+G.mR=70*G.s+50;G.mOpen=(G.tr&&face)?jaw>.25:true;
+if(held&&phase==="hold"&&Math.hypot(held.x-G.mouth.x,held.y-G.mouth.y)<G.mR){
+if(G.mOpen){cur=held.j;held=null;phase="mouth";tOpen=tClosed=0;taste=0;aroma=0;prevClosed=closed;beep(700,.2)}
+else hint("Buka mulutmu")}
+if(phase==="mouth"){
+closed?tClosed+=dt:tOpen+=dt;
+taste=Math.min(1,taste+dt*.9);
+aroma=closed?Math.max(.06,aroma-dt*1.5):Math.min(1,aroma+dt*.6)}}
+function reset(){
+  phase="pick";
+  held=null;
+  tOpen=tClosed=0;
+  taste=aroma=0;
+}
+$("rs").onclick=reset;
+$("nz").onclick=()=>{manual=!manual;$("nz").classList.toggle("on",manual);$("nz").textContent=manual?"Hidung dijepit (N)":"Jepit hidung (N)"};
+$("sm").onclick=()=>{const s=$("sum");s.style.display=s.style.display==="block"?"none":"block"};
+document.addEventListener("keydown",e=>{if(e.key==="n"||e.key==="N")$("nz").click();if(e.key==="r"||e.key==="R")reset()});
+
+// ---------- gambar ----------
+function rr(x,y,w,h,r){ctx.beginPath();ctx.roundRect(x,y,w,h,r)}
+function plaque(t,x,y,sz=26,bg="#f1e0b8",col="#3b2412",bd="#5a3a1a"){ctx.font="bold "+sz+"px Cinzel,MedievalSharp,Georgia,serif";const w=ctx.measureText(t).width+36,h=sz+22;x=Math.max(w/2+20,Math.min(W-w/2-20,x));const X=x-w/2,Y=y-h/2;
+ctx.save();ctx.shadowColor="#000a";ctx.shadowBlur=10;ctx.shadowOffsetY=4;rr(X,Y,w,h,8);ctx.fillStyle="#4a2f0a";ctx.fill();ctx.restore();
+rr(X+3,Y+3,w-6,h-6,6);ctx.fillStyle=bg;ctx.fill();ctx.strokeStyle=bd;ctx.lineWidth=2;ctx.stroke();
+rr(X+7,Y+7,w-14,h-14,4);ctx.strokeStyle="rgba(201,150,43,.7)";ctx.lineWidth=1.5;ctx.stroke();
+ctx.fillStyle=col;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(t,x,y+1)}
+
+const OL="#2b1a0a";
+function G0(x,y,k,f){ctx.save();ctx.translate(x,y);ctx.scale(k,k);ctx.lineJoin="round";ctx.lineCap="round";f();ctx.restore()}
+function grad(x0,y0,r,c0,c1){const g=ctx.createRadialGradient(x0,y0,2,x0,y0,r);g.addColorStop(0,c0);g.addColorStop(1,c1);return g}
+const ART=[
+(x,y,k)=>G0(x,y,k,()=>{ // stroberi
+ctx.beginPath();ctx.moveTo(0,-26);ctx.bezierCurveTo(44,-36,54,8,0,48);ctx.bezierCurveTo(-54,8,-44,-36,0,-26);
+ctx.fillStyle=grad(-14,-8,60,"#ff6b6b","#b3101e");ctx.fill();ctx.strokeStyle="#4a0710";ctx.lineWidth=3.5;ctx.stroke();
+ctx.fillStyle="#ffe58a";ctx.lineWidth=1;ctx.strokeStyle="#7a5a00";
+[[-16,-8],[0,-12],[16,-8],[-24,8],[-8,6],[8,6],[24,8],[-14,24],[2,22],[16,24],[0,38]].forEach(p=>{ctx.beginPath();ctx.ellipse(p[0],p[1],2.4,3.6,0,0,7);ctx.fill();ctx.stroke()});
+ctx.fillStyle="rgba(255,255,255,.35)";ctx.beginPath();ctx.ellipse(-22,-8,5,12,.4,0,7);ctx.fill();
+ctx.fillStyle="#3c9d3c";ctx.strokeStyle="#124012";ctx.lineWidth=2.5;
+for(let i=0;i<6;i++){const a=-Math.PI/2+(i-2.5)*.62;ctx.beginPath();ctx.moveTo(0,-26);ctx.quadraticCurveTo(Math.cos(a)*14-4,-26+Math.sin(a)*14,Math.cos(a)*26,-26+Math.sin(a)*20);ctx.quadraticCurveTo(Math.cos(a)*14+4,-26+Math.sin(a)*14+4,0,-26);ctx.fill();ctx.stroke()}
+ctx.strokeStyle="#124012";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(0,-26);ctx.lineTo(3,-40);ctx.stroke()}),
+(x,y,k)=>G0(x,y,k,()=>{ // lemon
+ctx.rotate(-.25);ctx.beginPath();ctx.moveTo(-54,0);ctx.lineTo(-45,-5);ctx.bezierCurveTo(-34,-42,34,-42,45,-5);ctx.lineTo(54,0);ctx.lineTo(45,5);ctx.bezierCurveTo(34,42,-34,42,-45,5);ctx.closePath();
+ctx.fillStyle=grad(-12,-14,70,"#fff59a","#eab308");ctx.fill();ctx.strokeStyle="#6e5200";ctx.lineWidth=3.5;ctx.stroke();
+ctx.fillStyle="rgba(150,110,0,.35)";[[-20,6],[-6,14],[12,8],[22,-6],[0,-8],[-24,-10],[28,10]].forEach(p=>{ctx.beginPath();ctx.arc(p[0],p[1],1.4,0,7);ctx.fill()});
+ctx.fillStyle="rgba(255,255,255,.5)";ctx.beginPath();ctx.ellipse(-14,-16,16,5,-.2,0,7);ctx.fill();
+ctx.fillStyle="#3c9d3c";ctx.strokeStyle="#124012";ctx.lineWidth=2.5;ctx.beginPath();ctx.moveTo(8,-33);ctx.quadraticCurveTo(22,-58,44,-44);ctx.quadraticCurveTo(30,-30,8,-33);ctx.fill();ctx.stroke();
+ctx.beginPath();ctx.moveTo(10,-34);ctx.lineTo(34,-44);ctx.stroke()}),
+(x,y,k)=>G0(x,y,k,()=>{ // kopi
+ctx.fillStyle="#d8cdb4";ctx.strokeStyle=OL;ctx.lineWidth=3;ctx.beginPath();ctx.ellipse(0,40,52,10,0,0,7);ctx.fill();ctx.stroke();
+ctx.strokeStyle=OL;ctx.lineWidth=11;ctx.beginPath();ctx.arc(34,6,15,-1.5,1.7);ctx.stroke();ctx.strokeStyle="#f5efe0";ctx.lineWidth=5;ctx.beginPath();ctx.arc(34,6,15,-1.5,1.7);ctx.stroke();
+ctx.beginPath();ctx.moveTo(-36,-12);ctx.lineTo(36,-12);ctx.bezierCurveTo(36,28,22,40,0,40);ctx.bezierCurveTo(-22,40,-36,28,-36,-12);
+ctx.fillStyle=grad(-14,0,60,"#ffffff","#cfc3a6");ctx.fill();ctx.strokeStyle=OL;ctx.lineWidth=3.5;ctx.stroke();
+ctx.beginPath();ctx.ellipse(0,-12,36,9,0,0,7);ctx.fillStyle="#4b2a14";ctx.fill();ctx.stroke();
+ctx.fillStyle="rgba(255,255,255,.25)";ctx.beginPath();ctx.ellipse(-8,-13,14,3,0,0,7);ctx.fill();
+ctx.strokeStyle="rgba(255,255,255,.85)";ctx.lineWidth=3;[-12,0,12].forEach((o,i)=>{ctx.beginPath();ctx.moveTo(o,-24);ctx.bezierCurveTo(o-8,-32,o+8,-38,o,-48-i*2);ctx.stroke()})}),
+(x,y,k)=>G0(x,y,k,()=>{ // cokelat
+ctx.rotate(-.2);rr(-42,-32,84,64,6);ctx.fillStyle="#d6a62c";ctx.fill();ctx.strokeStyle=OL;ctx.lineWidth=3.5;ctx.stroke();
+for(let r=0;r<3;r++)for(let c=0;c<4;c++){const X=-37+c*19,Y=-27+r*19;rr(X,Y,17,17,3);ctx.fillStyle=grad(X+5,Y+5,18,"#8a5230","#4a2812");ctx.fill();ctx.strokeStyle="#2a1408";ctx.lineWidth=1.5;ctx.stroke();ctx.strokeStyle="rgba(255,220,180,.35)";ctx.beginPath();ctx.moveTo(X+2,Y+14);ctx.lineTo(X+2,Y+2);ctx.lineTo(X+14,Y+2);ctx.stroke()}
+ctx.fillStyle="#e8c250";ctx.strokeStyle=OL;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(42,10);ctx.lineTo(42,32);ctx.lineTo(10,32);ctx.closePath();ctx.fill();ctx.stroke()})
+];
+function brainArt(x,y,s){G0(x,y,s/105,()=>{const sh=[[0,0,46,32]];for(let i=0;i<9;i++){const a=i*Math.PI*2/9;sh.push([Math.cos(a)*38,Math.sin(a)*24,17,17])}
+ctx.fillStyle=OL;ctx.fillRect(2,24,10,22);sh.forEach(q=>{ctx.beginPath();ctx.ellipse(q[0],q[1],q[2],q[3],0,0,7);ctx.strokeStyle=OL;ctx.lineWidth=7;ctx.stroke()});
+sh.forEach(q=>{ctx.beginPath();ctx.ellipse(q[0],q[1],q[2],q[3],0,0,7);ctx.fillStyle=grad(-14,-14,70,"#ffc4d2","#e8809b");ctx.fill()});
+ctx.fillStyle="#d8909e";ctx.fillRect(3,26,6,18);
+ctx.strokeStyle="#a8445f";ctx.lineWidth=2.2;ctx.beginPath();ctx.moveTo(0,-36);ctx.bezierCurveTo(-8,-14,8,10,0,34);ctx.stroke();
+[[-30,-10,-12,-6],[-32,10,-14,12],[30,-10,12,-6],[32,10,14,12],[-18,-26,-6,-20],[18,-26,6,-20]].forEach(l=>{ctx.beginPath();ctx.moveTo(l[0],l[1]);ctx.quadraticCurveTo((l[0]+l[2])/2,l[1]-8,l[2],l[3]);ctx.stroke()})})}
+function ban(x,y,r){ctx.save();ctx.fillStyle="rgba(255,255,255,.3)";ctx.strokeStyle="#c0392b";ctx.lineWidth=8;ctx.beginPath();ctx.arc(x,y,r,0,7);ctx.fill();ctx.stroke();ctx.beginPath();ctx.moveTo(x-r*.7,y-r*.7);ctx.lineTo(x+r*.7,y+r*.7);ctx.stroke();ctx.restore()}
+function card(i,cx,cy,w,a,face){if(face)return cardFace(i,cx,cy,w,a);
+const h=w*1.33,x=cx-w/2,y=cy-h/2,k=w/150;ctx.save();ctx.globalAlpha=a;
+ctx.shadowColor="#000b";ctx.shadowBlur=14;ctx.shadowOffsetY=6;rr(x,y,w,h,14*k);ctx.fillStyle="#5a3d0a";ctx.fill();ctx.shadowColor="transparent";
+const g=ctx.createLinearGradient(x,y,x,y+h);g.addColorStop(0,"#4a3418");g.addColorStop(1,"#241808");rr(x+5*k,y+5*k,w-10*k,h-10*k,10*k);ctx.fillStyle=g;ctx.fill();ctx.strokeStyle="#c9962b";ctx.lineWidth=2;ctx.stroke();
+rr(x+11*k,y+11*k,w-22*k,h-22*k,7*k);ctx.strokeStyle="rgba(201,150,43,.55)";ctx.lineWidth=1.2;ctx.stroke();
+const cy2=y+h*.46;ctx.beginPath();ctx.arc(cx,cy2,46*k,0,7);ctx.fillStyle=grad(cx,cy2,50*k,"#6b4a1e","#2f200c");ctx.fill();ctx.strokeStyle="#c9962b";ctx.lineWidth=2.5;ctx.stroke();
+ctx.beginPath();ctx.arc(cx,cy2,38*k,0,7);ctx.lineWidth=1;ctx.stroke();
+ctx.fillStyle="#c9962b";[[0,-1],[1,0],[0,1],[-1,0]].forEach(d=>{ctx.beginPath();ctx.moveTo(cx+d[0]*46*k+d[1]*5*k,cy2+d[1]*46*k+d[0]*5*k);ctx.lineTo(cx+d[0]*58*k,cy2+d[1]*58*k);ctx.lineTo(cx+d[0]*46*k-d[1]*5*k,cy2+d[1]*46*k-d[0]*5*k);ctx.fill()});
+ctx.fillStyle="#ffd43b";ctx.font="900 "+54*k+"px Cinzel,Georgia,serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText("?",cx,cy2+3*k);
+ctx.fillStyle="#c9962b";ctx.font="900 "+13*k+"px Cinzel,Georgia,serif";ctx.fillText("MISTERI",cx,y+h-26*k);ctx.restore()}
+function cardFace(i,cx,cy,w,a){const F=FOODS[i],h=w*1.33,x=cx-w/2,y=cy-h/2,k=w/150;ctx.save();ctx.globalAlpha=a;
+ctx.shadowColor="#000b";ctx.shadowBlur=14;ctx.shadowOffsetY=6;rr(x,y,w,h,14*k);ctx.fillStyle="#5a3d0a";ctx.fill();ctx.shadowColor="transparent";
+const g=ctx.createLinearGradient(x,y,x,y+h);g.addColorStop(0,"#f3ead0");g.addColorStop(1,"#d9c897");
+rr(x+5*k,y+5*k,w-10*k,h-10*k,10*k);ctx.fillStyle=g;ctx.fill();ctx.strokeStyle="#8a6a2a";ctx.lineWidth=2;ctx.stroke();
+rr(x+9*k,y+9*k,w-18*k,h-18*k,7*k);ctx.strokeStyle="rgba(138,106,42,.6)";ctx.lineWidth=1;ctx.stroke();
+ctx.fillStyle="#fbf6e3";ctx.fillRect(x+22*k,y+12*k,w-44*k,24*k);ctx.strokeStyle="#5a3d0a";ctx.lineWidth=2;ctx.strokeRect(x+22*k,y+12*k,w-44*k,24*k);
+ctx.fillStyle="#c9962b";[x+15*k,x+w-15*k].forEach(px=>{ctx.beginPath();ctx.arc(px,y+24*k,5*k,0,7);ctx.fill();ctx.stroke()});
+ctx.fillStyle="#3b2412";ctx.font="900 "+15*k+"px Cinzel,Georgia,serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(F.n.toUpperCase(),cx,y+25*k);
+const ig=ctx.createRadialGradient(cx,y+80*k,5,cx,y+80*k,60*k);ig.addColorStop(0,"#fffaf0");ig.addColorStop(1,"#e4d4a4");ctx.fillStyle=ig;ctx.fillRect(x+16*k,y+42*k,w-32*k,76*k);ctx.strokeStyle="#8a6a2a";ctx.lineWidth=1.5;ctx.strokeRect(x+16*k,y+42*k,w-32*k,76*k);
+ctx.shadowColor="transparent";ART[i](cx,y+80*k,k*.8);
+ctx.fillStyle="#cdb982";ctx.fillRect(x+12*k,y+124*k,w-24*k,h-124*k-14*k);ctx.strokeStyle="#8a6a2a";ctx.lineWidth=1.5;ctx.beginPath();ctx.moveTo(x+12*k,y+124*k);ctx.lineTo(x+w-12*k,y+124*k);ctx.stroke();
+ctx.textAlign="left";ctx.fillStyle="#3b2412";ctx.font="bold "+11*k+"px Georgia,serif";ctx.fillText("Rasa: "+F.t.join(", "),x+18*k,y+139*k);
+ctx.font="italic "+11*k+"px Georgia,serif";ctx.fillText("Aroma: "+F.a,x+18*k,y+156*k);ctx.restore()}
+const RED=["#8b1d1d","#f8e7b9","#c9962b"],GRN=["#2f6b2f","#f8e7b9","#c9962b"];
+const P=(t,x,y,sz,c)=>plaque(t,x,y,sz,c[0],c[1],c[2]);
+function emo(e,x,y,sz,a=1){ctx.globalAlpha=a;ctx.font=sz+"px serif";ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillText(e,x,y);ctx.globalAlpha=1}
+function qline(a,b,col,bend){ctx.strokeStyle=col;ctx.lineWidth=5;ctx.setLineDash([12,10]);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.quadraticCurveTo((a.x+b.x)/2+bend,(a.y+b.y)/2,b.x,b.y);ctx.stroke();ctx.setLineDash([])}
+function dots(a,b,T,col,n,bend,r=10){ctx.fillStyle=col;for(let i=0;i<n;i++){const u=(T*.55+i/Math.max(n,1))%1;ctx.beginPath();ctx.arc(a.x+(b.x-a.x)*u+Math.sin(u*Math.PI)*bend*.5,a.y+(b.y-a.y)*u,r,0,7);ctx.fill()}}
+const pul=T=>.5+.5*Math.sin(T*6);
+const GOLD="#ffd43b",BLUE="#4dabf7";
+
+function draw(G,T){
+if(hasCam&&vid.readyState>=2){const v=VS();ctx.save();ctx.translate(W,0);ctx.scale(-1,1);ctx.drawImage(vid,v.ox,v.oy,v.vw*v.sc,v.vh*v.sc);ctx.restore()}
+else{const g=ctx.createLinearGradient(0,0,0,H);g.addColorStop(0,"#3a2616");g.addColorStop(1,"#1b110a");ctx.fillStyle=g;ctx.fillRect(0,0,W,H);ctx.fillStyle="#2a1a0e";ctx.beginPath();ctx.ellipse(W/2,H*.42,130,170,0,0,7);ctx.ellipse(W/2,H*.98,270,170,0,0,7);ctx.fill()}
+// meja & makanan
+const wg=ctx.createLinearGradient(0,H-150,0,H);wg.addColorStop(0,"#6b4423");wg.addColorStop(1,"#3a2412");ctx.fillStyle=wg;ctx.fillRect(0,H-150,W,150);
+for(let i=0;i<4;i++){const used=phase==="mouth"&&cur===i;if(held&&held.j===i)continue;card(i,FX[i],FY,150,used?(!closed&&aroma>.5?1:.3):1,used&&!closed&&aroma>.5)}
+if(held)card(held.j,held.x,held.y,165,1);
+// lencana hidung (selalu terlihat)
+P(closed?"TERTUTUP":"TERBUKA",190,50,36,closed?RED:GRN);
+if(phase==="mouth")plaque("terbuka "+tOpen.toFixed(0)+" dtk  ·  tertutup "+tClosed.toFixed(0)+" dtk",190,104,22);
+// instruksi tunggal
+let ins="Jepit kartu misteri lalu seret ke mulut";
+if(phase==="hold")ins="Bawa ke mulut dan buka mulut";
+if(phase==="mouth")ins=closed?"Hidung tertutup: apa yang berubah? Lepas untuk membandingkan":(tClosed<1.5?"Hidung terbuka: lihat jalurnya, lalu jepit hidungmu":"Hidung terbuka lagi: bandingkan cita rasanya");
+P(ins,W/2+150,50,30,[ "#2a1a0e","#f8e7b9","#c9962b"]);
+if(phase==="hold"){ctx.strokeStyle=GOLD;ctx.lineWidth=4;ctx.setLineDash([12,10]);ctx.beginPath();ctx.arc(G.mouth.x,G.mouth.y,G.mR,0,7);ctx.stroke();ctx.setLineDash([]);
+if(Math.hypot(held.x-G.nose.x,held.y-G.nose.y)<G.fw*.55){
+if(!closed){dots(held,G.nose,T,BLUE,6,40);P("Aroma masuk lewat hidung",G.nose.x+200,G.nose.y-30,24,GRN)}
+else{ban(G.nose.x,G.nose.y,30);P("Aroma terhalang",G.nose.x+170,G.nose.y-30,24,RED)}}}
+// jalur
+if(phase==="mouth"){
+const F=FOODS[cur],full=taste>.5&&aroma>.5;
+// legenda
+P("● RASA (lidah)",W-150,150,24,["#2a1a0e",GOLD,"#c9962b"]);P("● AROMA (hidung)",W-150,198,24,["#2a1a0e",BLUE,"#c9962b"]);
+// rasa
+ctx.fillStyle="rgba(255,100,140,"+(.2+.4*taste*pul(T))+")";ctx.beginPath();ctx.ellipse(G.mouth.x,G.mouth.y+14*G.s+8,64*G.s+24,24*G.s+12,0,0,7);ctx.fill();
+qline(G.mouth,G.brain,GOLD,-150);dots(G.mouth,G.brain,T,GOLD,Math.round(taste*8),-150);
+plaque("Kuncup pengecap",G.mouth.x-60,G.mouth.y+80*G.s+60,24,"#ffe0ea","#7a1f3d","#7a1f3d");
+// kotak lima rasa
+ALL.forEach((x,i)=>{const on=F.t.includes(x)&&taste>.3,y=250+i*54;ctx.fillStyle=on?"#f1d78a":"rgba(43,32,22,.8)";ctx.strokeStyle=on?"#c9962b":"#5a3a1a";ctx.lineWidth=3;rr(26,y,230,44,8);ctx.fill();ctx.stroke();ctx.fillStyle=on?"#3b2412":"#8d7a5a";ctx.font="bold 26px MedievalSharp,Georgia,serif";ctx.textAlign="left";ctx.textBaseline="middle";ctx.fillText((on?"◆ ":"◇ ")+x,42,y+23)});
+if(closed&&taste>.5)plaque("Rasa dasar tetap terdeteksi",150,540,20,"#f1d78a","#3b2412","#c9962b");
+// aroma
+qline(G.mouth,G.cav,BLUE,170);
+if(!closed)dots(G.mouth,G.cav,T,BLUE,Math.round(aroma*8),170);
+else{ban(G.nose.x+8,G.nose.y,30);ctx.globalAlpha=.4;dots(G.mouth,G.cav,T,BLUE,1,170);ctx.globalAlpha=1}
+ctx.fillStyle="rgba(77,171,247,"+(.12+.45*aroma*pul(T))+")";ctx.beginPath();ctx.arc(G.cav.x,G.cav.y,44*G.s+16,0,7);ctx.fill();
+plaque("Reseptor olfaktori",G.cav.x+190,G.cav.y-30,24,"#cfe6fa","#1f4e79","#1f4e79");
+const b2={x:G.brain.x+30,y:G.brain.y};qline(G.cav,b2,closed?"#888":BLUE,140);
+ctx.globalAlpha=closed?.4:1;dots(G.cav,b2,T,BLUE,Math.round(aroma*8),140);ctx.globalAlpha=1;
+// otak
+const bs=(70*G.s+40)*(full?1+.1*pul(T):1);brainArt(G.brain.x,G.brain.y,bs);
+P(full?"CITA RASA UTUH":"CITA RASA TERBATAS",G.brain.x,G.brain.y-bs/2-34,30,full?GRN:RED);
+// teks aroma
+plaque(!closed&&aroma>.5?"Terungkap! Ini "+F.n+" ("+F.a+")":(closed?"Aroma tercium: — (terhalang)":"Aroma tercium: …"),W/2,H-185,30)}
+if(performance.now()<hintU)P(hintT,W/2,H-235,28,RED);
+const vg=ctx.createRadialGradient(W/2,H/2,H*.45,W/2,H/2,H*.95);vg.addColorStop(0,"rgba(0,0,0,0)");vg.addColorStop(1,"rgba(20,8,0,.55)");ctx.fillStyle=vg;ctx.fillRect(0,0,W,H);ctx.strokeStyle="#c9962b";ctx.lineWidth=6;ctx.strokeRect(4,4,W-8,H-8);
+handPts.forEach(p=>{ctx.fillStyle=p.down?GOLD:"rgba(255,255,255,.6)";ctx.beginPath();ctx.arc(p.x,p.y,p.down?16:10,0,7);ctx.fill();ctx.strokeStyle="#3b2412";ctx.lineWidth=2;ctx.stroke()});
+if(hasCam&&faceLM&&!face)P("Wajah belum terdeteksi",W/2,H-300,24,RED)}
+
+function frame(now){const dt=Math.min(.1,(now-last)/1000);last=now;detect(performance.now());const G=geo();logic(dt,G);draw(G,now/1000);requestAnimationFrame(frame)}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
